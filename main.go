@@ -18,12 +18,11 @@ import (
 type config struct {
 	Listen string `toml:"listen"`
 	Path   string `toml:"http_path"`
+}
 
-	url string
-
-	ln  net.Listener
-	rtr *mux.Router
-	srv *http.Server
+type job struct {
+	cl  *http.Client
+	req *http.Request
 }
 
 const defConf = "config.toml"
@@ -32,7 +31,7 @@ var (
 	opt = &config{}
 	c   atomic.Uint64
 
-	done = make(chan struct{}, 1)
+	done = make(chan struct{})
 )
 
 func main() {
@@ -57,21 +56,20 @@ func parseConfig(configFile string) error {
 	if _, err := toml.DecodeFile(configFile, &opt); err != nil {
 		return err
 	}
-
 	return nil
 }
 
 func httpServer() {
-	var err error
-	if opt.ln, err = net.Listen("tcp", opt.Listen); err != nil {
+	ln, err := net.Listen("tcp", opt.Listen)
+	if err != nil {
 		log.Fatal(err)
 	}
-	opt.rtr = mux.NewRouter()
-	opt.rtr.HandleFunc(path.Clean(opt.Path), httpClient).Methods(http.MethodGet)
-	opt.srv = &http.Server{Handler: opt.rtr}
+	rtr := mux.NewRouter()
+	rtr.HandleFunc(path.Clean(opt.Path), httpClient).Methods(http.MethodGet)
+	srv := &http.Server{Handler: rtr}
 
 	log.Printf("Starting HTTP server on \"%s%s\"", opt.Listen, opt.Path)
-	log.Fatalf("HTTP server: %v", opt.srv.Serve(opt.ln))
+	log.Fatalf("HTTP server: %v", srv.Serve(ln))
 }
 
 func httpClient(w http.ResponseWriter, r *http.Request) {
@@ -82,8 +80,7 @@ func httpClient(w http.ResponseWriter, r *http.Request) {
 	}()
 	v := r.URL.Query()
 	if len(v) == 0 {
-		http.Error(w, "no params for test provided", http.StatusBadRequest)
-		log.Print("no params for test provided")
+		errorResp(w, "no params for test provided", http.StatusBadRequest)
 		return
 	}
 	dur := getDuration(v)
@@ -94,7 +91,7 @@ func httpClient(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("duration: %vs, url: %s", dur.Seconds(), url)
 
-	cl := http.DefaultClient
+	cl := &http.Client{Timeout: 300 * time.Millisecond}
 	defer cl.CloseIdleConnections()
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -104,18 +101,11 @@ func httpClient(w http.ResponseWriter, r *http.Request) {
 	c.Swap(0)
 
 	go run(cl, req)
-
 	time.Sleep(dur)
 	done <- struct{}{}
-
-	var resp struct {
-		Count uint64
-	}
-	resp.Count = c.Load()
+	log.Printf("duration: %vs, url: %s, count: %d", dur.Seconds(), url, c.Load())
 	if err := jsonResp(w,
-		struct {
-			Count uint64
-		}{c.Load()},
+		struct{ Count uint64 }{Count: c.Load()},
 	); err != nil {
 		log.Println(err)
 	}
@@ -155,9 +145,10 @@ func run(cl *http.Client, req *http.Request) {
 			return
 		default:
 			go request(cl, req)
-			//time.Sleep(500 * time.Millisecond) // tmp for test
+			//time.Sleep(200 * time.Millisecond) // tmp for test
 		}
 	}
+
 }
 
 func request(cl *http.Client, req *http.Request) {
