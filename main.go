@@ -20,11 +20,6 @@ type config struct {
 	Path   string `toml:"http_path"`
 }
 
-type job struct {
-	cl  *http.Client
-	req *http.Request
-}
-
 const defConf = "config.toml"
 
 var (
